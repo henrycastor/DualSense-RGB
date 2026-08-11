@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 
+"""Low-level usbmon binary API for capturing DualSense USB traffic."""
+
 import logging
 import os
 import struct
 import fcntl
 import ctypes
+from typing import Optional, Tuple
 
 from constants import (
     MON_IOC_MAGIC,
@@ -13,16 +16,24 @@ from constants import (
     USBMON_HEADER_FORMAT,
     USBMON_HEADER_SIZE,
     USBMON_DEV_TEMPLATE,
+    DATA_BUFFER_SIZE,
 )
 
 logger = logging.getLogger(__name__)
+
+__all__ = [
+    "open_usbmon",
+    "get_usbmon_packet",
+    "parse_usbmon_header",
+]
 
 
 # ============================================================
 # usbmon binary API
 # ============================================================
 
-def _IOC(direction, ioctl_type, number, size):
+
+def _IOC(direction: int, ioctl_type: int, number: int, size: int) -> int:
     """
     Linux _IOC() helper.
 
@@ -62,7 +73,8 @@ MON_IOCX_GETX = _IOC(
 # Parse usbmon binary header
 # ============================================================
 
-def parse_usbmon_header(header):
+
+def parse_usbmon_header(header: bytes) -> Optional[dict]:
     """Decode the 72-byte usbmon packet header."""
 
     if len(header) < USBMON_HEADER_SIZE:
@@ -103,10 +115,7 @@ def parse_usbmon_header(header):
         "bus": bus,
         "flag_setup": flag_setup,
         "flag_data": flag_data,
-        "timestamp": (
-            ts_sec,
-            ts_usec,
-        ),
+        "timestamp": (ts_sec, ts_usec),
         "status": status,
         "length": length,
         "captured_length": captured_length,
@@ -121,7 +130,8 @@ def parse_usbmon_header(header):
 # Open usbmon binary device
 # ============================================================
 
-def open_usbmon(bus):
+
+def open_usbmon(bus: int) -> Optional[int]:
     """
     Open /dev/usbmonN.
 
@@ -130,9 +140,7 @@ def open_usbmon(bus):
     the DualSense report.
     """
 
-    path = USBMON_DEV_TEMPLATE.format(
-        bus
-    )
+    path = USBMON_DEV_TEMPLATE.format(bus)
 
     if not os.path.exists(path):
         logger.error("%s does not exist.", path)
@@ -157,7 +165,8 @@ def open_usbmon(bus):
 # Get next usbmon packet
 # ============================================================
 
-def get_usbmon_packet(fd):
+
+def get_usbmon_packet(fd: int) -> Tuple[Optional[dict], bytes]:
     """
     Read the next usbmon binary event.
 
@@ -165,27 +174,11 @@ def get_usbmon_packet(fd):
         (header, data)
     """
 
-    # Allocate enough room for a normal DualSense transfer.
-    #
-    # The USB endpoint allows 64 bytes, but giving usbmon a
-    # larger buffer costs essentially nothing.
-    data_buffer_size = 4096
+    header_buffer = ctypes.create_string_buffer(USBMON_HEADER_SIZE)
+    data_buffer = ctypes.create_string_buffer(DATA_BUFFER_SIZE)
 
-    header_buffer = ctypes.create_string_buffer(
-        USBMON_HEADER_SIZE
-    )
-
-    data_buffer = ctypes.create_string_buffer(
-        data_buffer_size
-    )
-
-    header_address = ctypes.addressof(
-        header_buffer
-    )
-
-    data_address = ctypes.addressof(
-        data_buffer
-    )
+    header_address = ctypes.addressof(header_buffer)
+    data_address = ctypes.addressof(data_buffer)
 
     # struct mon_get_arg
     #
@@ -197,7 +190,7 @@ def get_usbmon_packet(fd):
         "QQQ",
         header_address,
         data_address,
-        data_buffer_size,
+        DATA_BUFFER_SIZE,
     )
 
     arg_buffer = bytearray(arg)
@@ -211,12 +204,12 @@ def get_usbmon_packet(fd):
         )
 
     except InterruptedError:
-        return None, None
+        return None, b""
 
     except OSError as exc:
         # EAGAIN is possible with some configurations.
         if getattr(exc, "errno", None) == 11:
-            return None, None
+            return None, b""
         raise
 
     header = bytes(header_buffer.raw)
@@ -224,15 +217,15 @@ def get_usbmon_packet(fd):
     parsed = parse_usbmon_header(header)
 
     if parsed is None:
-        return None, None
+        return None, b""
 
     captured_length = parsed["captured_length"]
 
     if captured_length <= 0:
         return parsed, b""
 
-    if captured_length > data_buffer_size:
-        captured_length = data_buffer_size
+    if captured_length > DATA_BUFFER_SIZE:
+        captured_length = DATA_BUFFER_SIZE
 
     data = bytes(data_buffer.raw[:captured_length])
 

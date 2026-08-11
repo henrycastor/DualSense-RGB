@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 
+"""Shared constants for the DualSense -> OpenRGB bridge."""
+
 # ============================================================
 # DualSense identification
 # ============================================================
@@ -19,6 +21,14 @@ USBMON_DEV_TEMPLATE = "/dev/usbmon{}"
 #
 DUALSENSE_HID_OUT_ENDPOINT = 3
 
+# DualSense output report IDs
+DUALSENSE_REPORT_ID = 0x02
+
+# Lightbar control
+LIGHTBAR_ENABLE_BIT = 0x04
+LIGHTBAR_RED_OFFSET = 45
+LIGHTBAR_GREEN_OFFSET = 46
+LIGHTBAR_BLUE_OFFSET = 47
 
 # ============================================================
 # usbmon binary API
@@ -38,7 +48,6 @@ MON_IOCX_GETX_NR = 10
 # On normal 64-bit Linux this is 24 bytes.
 #
 MON_GET_ARG_SIZE = 24  # struct.calcsize("QQQ")
-
 
 # ============================================================
 # usbmon packet header
@@ -109,3 +118,25 @@ USBMON_HEADER_FORMAT = (
 )
 
 USBMON_HEADER_SIZE = 72  # struct.calcsize(USBMON_HEADER_FORMAT)
+
+# ============================================================
+# USB transfer types
+# ============================================================
+
+USB_TRANSFER_TYPE_ISO = 0
+USB_TRANSFER_TYPE_INTERRUPT = 1
+USB_TRANSFER_TYPE_CONTROL = 2
+USB_TRANSFER_TYPE_BULK = 3
+
+# ============================================================
+# Endpoint parsing
+# ============================================================
+
+ENDPOINT_NUMBER_MASK = 0x7F
+ENDPOINT_DIRECTION_MASK = 0x80
+
+# ============================================================
+# usbmon data buffer
+# ============================================================
+
+DATA_BUFFER_SIZE = 4096

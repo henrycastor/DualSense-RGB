@@ -1,9 +1,17 @@
 #!/usr/bin/env python3
 
+"""Monitor DualSense lightbar changes via usbmon and forward to OpenRGB."""
+
 import logging
 import os
+from typing import Optional
 
-from constants import DUALSENSE_HID_OUT_ENDPOINT
+from constants import (
+    DUALSENSE_HID_OUT_ENDPOINT,
+    USB_TRANSFER_TYPE_INTERRUPT,
+    ENDPOINT_NUMBER_MASK,
+    ENDPOINT_DIRECTION_MASK,
+)
 from usbmon import open_usbmon, get_usbmon_packet
 from dualsense import (
     find_dualsense_hidraw,
@@ -15,12 +23,21 @@ from openrgb_bridge import connect_openrgb, update_openrgb
 
 logger = logging.getLogger(__name__)
 
+__all__ = ["monitor_dualsense", "main"]
+
 
 # ============================================================
 # Monitor DualSense
 # ============================================================
 
-def monitor_dualsense(fd, bus, device, openrgb):
+
+def monitor_dualsense(
+    fd: int,
+    bus: int,
+    device: int,
+    openrgb_client,
+) -> None:
+    """Capture usbmon events and forward DualSense lightbar color to OpenRGB."""
 
     logger.info("Bus:       %03d", bus)
     logger.info("Device:    %03d", device)
@@ -28,7 +45,7 @@ def monitor_dualsense(fd, bus, device, openrgb):
     logger.info("Capturing full usbmon binary transfers...")
     logger.info("Waiting for DualSense lightbar changes...")
 
-    last_rgb = None
+    last_rgb: Optional[tuple] = None
 
     try:
         while True:
@@ -55,8 +72,8 @@ def monitor_dualsense(fd, bus, device, openrgb):
             # ------------------------------------------------
 
             endpoint = packet["endpoint"]
-            endpoint_number = endpoint & 0x7F
-            endpoint_is_in = bool(endpoint & 0x80)
+            endpoint_number = endpoint & ENDPOINT_NUMBER_MASK
+            endpoint_is_in = bool(endpoint & ENDPOINT_DIRECTION_MASK)
 
             if endpoint_number != DUALSENSE_HID_OUT_ENDPOINT:
                 continue
@@ -75,7 +92,7 @@ def monitor_dualsense(fd, bus, device, openrgb):
             # 3 = Bulk
             # ------------------------------------------------
 
-            if packet["transfer_type"] != 1:
+            if packet["transfer_type"] != USB_TRANSFER_TYPE_INTERRUPT:
                 continue
 
             if not data:
@@ -122,7 +139,7 @@ def monitor_dualsense(fd, bus, device, openrgb):
             logger.info("==============================================")
             logger.info("")
 
-            update_openrgb(openrgb, rgb)
+            update_openrgb(openrgb_client, rgb)
 
     except KeyboardInterrupt:
         logger.info("Stopping monitor...")
@@ -138,7 +155,9 @@ def monitor_dualsense(fd, bus, device, openrgb):
 # Main
 # ============================================================
 
-def main():
+
+def main() -> None:
+    """Entry point: discover DualSense, open usbmon, and start monitoring."""
 
     logging.basicConfig(
         level=logging.INFO,
@@ -197,17 +216,27 @@ def main():
     # OpenRGB
     # --------------------------------------------------------
 
-    openrgb = connect_openrgb()
+    openrgb_client = connect_openrgb()
 
-    if openrgb is None:
-        os.close(usbmon_fd)
+    if openrgb_client is None:
+        try:
+            os.close(usbmon_fd)
+        except OSError:
+            pass
         return
 
     # --------------------------------------------------------
     # Monitor
     # --------------------------------------------------------
 
-    monitor_dualsense(usbmon_fd, bus, device, openrgb)
+    try:
+        monitor_dualsense(usbmon_fd, bus, device, openrgb_client)
+    finally:
+        # Ensure the OpenRGB client is cleaned up.
+        try:
+            openrgb_client.disconnect()
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":

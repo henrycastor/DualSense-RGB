@@ -1,21 +1,64 @@
 #!/usr/bin/env python3
 
+"""DualSense device discovery, USB topology, and RGB extraction."""
+
 import os
 import re
+from typing import Optional, Tuple
 
 from constants import (
     SONY_VID,
     DUALSENSE_PID,
     DUALSENSE_EDGE_PID,
     HIDRAW_DIR,
+    DUALSENSE_REPORT_ID,
+    LIGHTBAR_ENABLE_BIT,
+    LIGHTBAR_RED_OFFSET,
+    LIGHTBAR_GREEN_OFFSET,
+    LIGHTBAR_BLUE_OFFSET,
 )
+
+__all__ = [
+    "find_dualsense_hidraw",
+    "get_usb_topology",
+    "get_usb_topology_udevadm",
+    "extract_dualsense_rgb",
+    "read_uevent",
+    "parse_bus_device",
+]
+
+
+# ============================================================
+# Helpers
+# ============================================================
+
+
+def read_uevent(path: str) -> Optional[str]:
+    """Read a sysfs uevent file, returning None on error."""
+    try:
+        with open(path, "r", encoding="utf-8", errors="ignore") as file:
+            return file.read()
+    except OSError:
+        return None
+
+
+def parse_bus_device(content: str) -> Optional[Tuple[int, int]]:
+    """Extract (bus, device) from uevent content or udevadm output."""
+    bus_match = re.search(r"BUSNUM=(\\d+)", content)
+    dev_match = re.search(r"DEVNUM=(\\d+)", content)
+
+    if bus_match and dev_match:
+        return int(bus_match.group(1)), int(dev_match.group(1))
+
+    return None
 
 
 # ============================================================
 # Find DualSense hidraw
 # ============================================================
 
-def find_dualsense_hidraw():
+
+def find_dualsense_hidraw() -> Optional[str]:
     """Find the DualSense hidraw node using sysfs."""
 
     if not os.path.isdir(HIDRAW_DIR):
@@ -30,28 +73,19 @@ def find_dualsense_hidraw():
             "uevent",
         )
 
-        if not os.path.isfile(uevent_path):
+        content = read_uevent(uevent_path)
+
+        if content is None:
             continue
 
-        try:
-            with open(
-                uevent_path,
-                "r",
-                encoding="utf-8",
-                errors="ignore",
-            ) as file:
+        content_upper = content.upper()
 
-                content = file.read().upper()
-
-        except OSError:
-            continue
-
-        if SONY_VID not in content:
+        if SONY_VID not in content_upper:
             continue
 
         if (
-            DUALSENSE_PID in content
-            or DUALSENSE_EDGE_PID in content
+            DUALSENSE_PID in content_upper
+            or DUALSENSE_EDGE_PID in content_upper
         ):
             return os.path.join(
                 "/dev",
@@ -65,15 +99,14 @@ def find_dualsense_hidraw():
 # USB topology
 # ============================================================
 
-def get_usb_topology(hidraw_path):
+
+def get_usb_topology(hidraw_path: str) -> Optional[Tuple[int, int]]:
     """
     Resolve the USB bus/device address from the hidraw
     sysfs hierarchy.
     """
 
-    node = os.path.basename(
-        hidraw_path
-    )
+    node = os.path.basename(hidraw_path)
 
     current = os.path.realpath(
         os.path.join(
@@ -85,48 +118,17 @@ def get_usb_topology(hidraw_path):
 
     while current != "/":
 
-        uevent_path = os.path.join(
-            current,
-            "uevent",
-        )
+        uevent_path = os.path.join(current, "uevent")
 
-        if os.path.isfile(uevent_path):
+        content = read_uevent(uevent_path)
 
-            try:
+        if content is not None:
+            topology = parse_bus_device(content)
 
-                with open(
-                    uevent_path,
-                    "r",
-                    encoding="utf-8",
-                    errors="ignore",
-                ) as file:
+            if topology is not None:
+                return topology
 
-                    content = file.read()
-
-            except OSError:
-
-                content = ""
-
-            bus_match = re.search(
-                r"BUSNUM=(\d+)",
-                content,
-            )
-
-            dev_match = re.search(
-                r"DEVNUM=(\d+)",
-                content,
-            )
-
-            if bus_match and dev_match:
-
-                return (
-                    int(bus_match.group(1)),
-                    int(dev_match.group(1)),
-                )
-
-        parent = os.path.dirname(
-            current
-        )
+        parent = os.path.dirname(current)
 
         if parent == current:
             break
@@ -136,11 +138,10 @@ def get_usb_topology(hidraw_path):
     return None
 
 
-def get_usb_topology_udevadm(hidraw_path):
-    """Fallback USB topology lookup."""
+def get_usb_topology_udevadm(hidraw_path: str) -> Optional[Tuple[int, int]]:
+    """Fallback USB topology lookup using udevadm."""
 
     try:
-
         result = os.popen(
             f"udevadm info --query=property "
             f"--name={hidraw_path}"
@@ -149,40 +150,15 @@ def get_usb_topology_udevadm(hidraw_path):
     except Exception:
         return None
 
-    bus = None
-    device = None
-
-    for line in result.splitlines():
-
-        if line.startswith("BUSNUM="):
-
-            try:
-                bus = int(
-                    line.split("=", 1)[1]
-                )
-            except ValueError:
-                pass
-
-        elif line.startswith("DEVNUM="):
-
-            try:
-                device = int(
-                    line.split("=", 1)[1]
-                )
-            except ValueError:
-                pass
-
-    if bus is not None and device is not None:
-        return bus, device
-
-    return None
+    return parse_bus_device(result)
 
 
 # ============================================================
 # DualSense RGB extraction
 # ============================================================
 
-def extract_dualsense_rgb(data):
+
+def extract_dualsense_rgb(data: bytes) -> Optional[Tuple[int, int, int]]:
     """
     Extract RGB from the wired DualSense output report.
 
@@ -208,7 +184,7 @@ def extract_dualsense_rgb(data):
         return None
 
     # USB DualSense main output report.
-    if data[0] != 0x02:
+    if data[0] != DUALSENSE_REPORT_ID:
         return None
 
     # Need the complete RGB section.
@@ -218,17 +194,11 @@ def extract_dualsense_rgb(data):
     # Common output valid_flag1.
     #
     # Bit 2 enables lightbar control.
-    if not (
-        data[2] & 0x04
-    ):
+    if not (data[2] & LIGHTBAR_ENABLE_BIT):
         return None
 
-    red = data[45]
-    green = data[46]
-    blue = data[47]
+    red = data[LIGHTBAR_RED_OFFSET]
+    green = data[LIGHTBAR_GREEN_OFFSET]
+    blue = data[LIGHTBAR_BLUE_OFFSET]
 
-    return (
-        red,
-        green,
-        blue,
-    )
+    return (red, green, blue)
