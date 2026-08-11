@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dualsense-rgb"
+version = "1.0.0"
+description = "Bridge DualSense lightbar colors to OpenRGB via usbmon"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.9"
+authors = [
+    {name = "Henry", email = "henry@example.com"},
+]
+keywords = ["dualsense", "openrgb", "usbmon", "rgb", "lightbar"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+]
+dependencies = [
+    "openrgb-python>=0.3.6",
+]
+
+[project.scripts]
+dualsense-rgb = "monitor:main"
+
+[project.urls]
+Homepage = "https://github.com/henry/DualSense-RGB"
+Repository = "https://github.com/henry/DualSense-RGB"
+
+[tool.setuptools]
+py-modules = ["constants", "dualsense", "monitor", "openrgb_bridge", "usbmon"]

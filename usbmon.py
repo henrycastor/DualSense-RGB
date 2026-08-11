@@ -7,6 +7,7 @@ import os
 import struct
 import fcntl
 import ctypes
+from dataclasses import dataclass
 from typing import Optional, Tuple
 
 from constants import (
@@ -25,6 +26,7 @@ __all__ = [
     "open_usbmon",
     "get_usbmon_packet",
     "parse_usbmon_header",
+    "UsbmonPacket",
 ]
 
 
@@ -70,11 +72,38 @@ MON_IOCX_GETX = _IOC(
 
 
 # ============================================================
+# usbmon packet dataclass
+# ============================================================
+
+
+@dataclass
+class UsbmonPacket:
+    """Decoded 72-byte usbmon packet header."""
+
+    id: int
+    type: int
+    transfer_type: int
+    endpoint: int
+    device: int
+    bus: int
+    flag_setup: int
+    flag_data: int
+    timestamp: Tuple[int, int]
+    status: int
+    length: int
+    captured_length: int
+    interval: int
+    start_frame: int
+    xfer_flags: int
+    num_desc: int
+
+
+# ============================================================
 # Parse usbmon binary header
 # ============================================================
 
 
-def parse_usbmon_header(header: bytes) -> Optional[dict]:
+def parse_usbmon_header(header: bytes) -> Optional[UsbmonPacket]:
     """Decode the 72-byte usbmon packet header."""
 
     if len(header) < USBMON_HEADER_SIZE:
@@ -106,24 +135,24 @@ def parse_usbmon_header(header: bytes) -> Optional[dict]:
         num_desc,
     ) = values
 
-    return {
-        "id": packet_id,
-        "type": packet_type,
-        "transfer_type": transfer_type,
-        "endpoint": endpoint,
-        "device": device,
-        "bus": bus,
-        "flag_setup": flag_setup,
-        "flag_data": flag_data,
-        "timestamp": (ts_sec, ts_usec),
-        "status": status,
-        "length": length,
-        "captured_length": captured_length,
-        "interval": interval,
-        "start_frame": start_frame,
-        "xfer_flags": xfer_flags,
-        "num_desc": num_desc,
-    }
+    return UsbmonPacket(
+        id=packet_id,
+        type=packet_type,
+        transfer_type=transfer_type,
+        endpoint=endpoint,
+        device=device,
+        bus=bus,
+        flag_setup=flag_setup,
+        flag_data=flag_data,
+        timestamp=(ts_sec, ts_usec),
+        status=status,
+        length=length,
+        captured_length=captured_length,
+        interval=interval,
+        start_frame=start_frame,
+        xfer_flags=xfer_flags,
+        num_desc=num_desc,
+    )
 
 
 # ============================================================
@@ -166,7 +195,7 @@ def open_usbmon(bus: int) -> Optional[int]:
 # ============================================================
 
 
-def get_usbmon_packet(fd: int) -> Tuple[Optional[dict], bytes]:
+def get_usbmon_packet(fd: int) -> Tuple[Optional[UsbmonPacket], bytes]:
     """
     Read the next usbmon binary event.
 
@@ -219,7 +248,7 @@ def get_usbmon_packet(fd: int) -> Tuple[Optional[dict], bytes]:
     if parsed is None:
         return None, b""
 
-    captured_length = parsed["captured_length"]
+    captured_length = parsed.captured_length
 
     if captured_length <= 0:
         return parsed, b""

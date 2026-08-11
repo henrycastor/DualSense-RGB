@@ -12,7 +12,7 @@ from constants import (
     ENDPOINT_NUMBER_MASK,
     ENDPOINT_DIRECTION_MASK,
 )
-from usbmon import open_usbmon, get_usbmon_packet
+from usbmon import open_usbmon, get_usbmon_packet, UsbmonPacket
 from dualsense import (
     find_dualsense_hidraw,
     get_usb_topology,
@@ -58,10 +58,10 @@ def monitor_dualsense(
             # Device filter
             # ------------------------------------------------
 
-            if packet["bus"] != bus:
+            if packet.bus != bus:
                 continue
 
-            if packet["device"] != device:
+            if packet.device != device:
                 continue
 
             # ------------------------------------------------
@@ -71,7 +71,7 @@ def monitor_dualsense(
             # direction. For OUT endpoint 3 this should be 3.
             # ------------------------------------------------
 
-            endpoint = packet["endpoint"]
+            endpoint = packet.endpoint
             endpoint_number = endpoint & ENDPOINT_NUMBER_MASK
             endpoint_is_in = bool(endpoint & ENDPOINT_DIRECTION_MASK)
 
@@ -92,17 +92,10 @@ def monitor_dualsense(
             # 3 = Bulk
             # ------------------------------------------------
 
-            if packet["transfer_type"] != USB_TRANSFER_TYPE_INTERRUPT:
+            if packet.transfer_type != USB_TRANSFER_TYPE_INTERRUPT:
                 continue
 
             if not data:
-                continue
-
-            # ------------------------------------------------
-            # Only inspect reports beginning with 0x02.
-            # ------------------------------------------------
-
-            if data[0] != 0x02:
                 continue
 
             # ------------------------------------------------

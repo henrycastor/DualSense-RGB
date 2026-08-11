@@ -4,6 +4,7 @@
 
 import os
 import re
+import subprocess
 from typing import Optional, Tuple
 
 from constants import (
@@ -44,8 +45,8 @@ def read_uevent(path: str) -> Optional[str]:
 
 def parse_bus_device(content: str) -> Optional[Tuple[int, int]]:
     """Extract (bus, device) from uevent content or udevadm output."""
-    bus_match = re.search(r"BUSNUM=(\\d+)", content)
-    dev_match = re.search(r"DEVNUM=(\\d+)", content)
+    bus_match = re.search(r"BUSNUM=(\d+)", content)
+    dev_match = re.search(r"DEVNUM=(\d+)", content)
 
     if bus_match and dev_match:
         return int(bus_match.group(1)), int(dev_match.group(1))
@@ -142,10 +143,18 @@ def get_usb_topology_udevadm(hidraw_path: str) -> Optional[Tuple[int, int]]:
     """Fallback USB topology lookup using udevadm."""
 
     try:
-        result = os.popen(
-            f"udevadm info --query=property "
-            f"--name={hidraw_path}"
-        ).read()
+        result = subprocess.run(
+            [
+                "udevadm",
+                "info",
+                "--query=property",
+                "--name",
+                hidraw_path,
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        ).stdout
 
     except Exception:
         return None
