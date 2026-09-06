@@ -173,9 +173,35 @@ def update_openrgb(client: OpenRGBClient, rgb: Tuple[int, int, int]) -> None:
 
         for device in client.devices:
             if not device.leds:
+                logger.debug(
+                    "Skipping device %r: no LEDs exposed.", device.name
+                )
                 continue
 
+            active_mode = device.modes[device.active_mode]
+            mode_name = active_mode.name
+            color_mode = active_mode.color_mode
+
+            logger.debug(
+                "Device %r: %d LEDs, active mode=%r (color_mode=%s)",
+                device.name,
+                len(device.leds),
+                mode_name,
+                color_mode.name,
+            )
+
+            if color_mode.name != "PER_LED":
+                logger.info(
+                    "Device %r is in mode %r (color_mode=%s). "
+                    "Switching to custom (per-LED) mode.",
+                    device.name,
+                    mode_name,
+                    color_mode.name,
+                )
+                device.set_custom_mode()
+
             device.set_colors([color] * len(device.leds))
+            logger.debug("Successfully updated device %r.", device.name)
 
     except Exception as exc:
-        logger.error("OpenRGB update failed: %s", exc)
+        logger.error("OpenRGB update failed: %s", exc, exc_info=True)

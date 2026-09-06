@@ -35,6 +35,26 @@ DUALSENSE_HID_OUT_ENDPOINT = 3
 # DualSense output report IDs
 DUALSENSE_REPORT_ID = 0x02
 
+# ============================================================
+# Idle detection
+# ============================================================
+
+# How long (seconds) without any DualSense HID OUT traffic before the
+# controller is considered idle (screen off).
+IDLE_TIMEOUT = 30.0
+
+# Polling interval (seconds) used when no usbmon data is available so the
+# monitor does not busy-spin while waiting for traffic.
+POLL_INTERVAL = 0.05
+
+# ============================================================
+# wljoywake
+# ============================================================
+
+# Command used to start wljoywake, which prevents the Wayland compositor
+# from idling while a joystick is active.
+WLJOYWAKE_CMD = ["wljoywake"]
+
 
 @dataclass(frozen=True)
 class LightbarOffsets:

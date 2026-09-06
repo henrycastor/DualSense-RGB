@@ -7,6 +7,7 @@ import logging
 import sys
 from typing import List, Optional
 
+from dualsense_rgb.constants import IDLE_TIMEOUT
 from dualsense_rgb.monitor import main
 
 
@@ -26,6 +27,16 @@ def build_parser() -> argparse.ArgumentParser:
         "--version",
         action="version",
         version="%(prog)s 2.0.0",
+    )
+    parser.add_argument(
+        "--idle-timeout",
+        type=float,
+        default=IDLE_TIMEOUT,
+        metavar="SECONDS",
+        help=(
+            "Seconds of inactivity before the DualSense is considered "
+            "idle (screen off)."
+        ),
     )
     return parser
 
@@ -47,7 +58,7 @@ def main_cli(argv: Optional[List[str]] = None) -> int:
 
     configure_logging(args.verbose)
 
-    main()
+    main(args.idle_timeout)
 
     return 0
 

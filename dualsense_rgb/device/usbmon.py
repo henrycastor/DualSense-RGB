@@ -7,6 +7,7 @@ import fcntl
 import logging
 import os
 import struct
+import subprocess
 from dataclasses import dataclass
 from typing import Optional, Tuple
 
