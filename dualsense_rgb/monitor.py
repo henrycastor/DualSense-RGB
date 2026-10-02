@@ -33,7 +33,45 @@ from dualsense_rgb.bridge.evdev import (
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["monitor_dualsense", "main"]
+__all__ = ["is_lightbar_packet", "monitor_dualsense", "main"]
+
+
+# ============================================================
+# Packet filtering
+# ============================================================
+
+
+def is_lightbar_packet(packet, bus: int, device: int) -> bool:
+    """Return True if a usbmon packet carries a DualSense lightbar report.
+
+    A packet qualifies only when all of the following hold:
+
+    * it comes from the DualSense' own bus and device address,
+    * it targets HID OUT endpoint ``DUALSENSE_HID_OUT_ENDPOINT``
+      (``usbmon``'s ``epnum`` packs the direction into bit 7, so the
+      raw value for OUT endpoint 3 is 3, not 131),
+    * it travels OUT rather than IN, and
+    * it is an interrupt transfer. ``usbmon`` ``xfer_type`` values are
+      0 = ISO, 1 = Interrupt, 2 = Control, 3 = Bulk.
+    """
+    if packet.bus != bus:
+        return False
+
+    if packet.device != device:
+        return False
+
+    endpoint = UsbmonEndpoint.from_packet(packet)
+
+    if endpoint.number != DUALSENSE_HID_OUT_ENDPOINT:
+        return False
+
+    if endpoint.is_in:
+        return False
+
+    if packet.transfer_type != UsbTransferType.INTERRUPT:
+        return False
+
+    return True
 
 
 # ============================================================
@@ -113,10 +151,7 @@ def monitor_dualsense(
             # Device filter
             # ------------------------------------------------
 
-            if packet.bus != bus:
-                continue
-
-            if packet.device != device:
+            if packet.bus != bus or packet.device != device:
                 continue
 
             # Any traffic from our DualSense counts as activity, so the
@@ -126,32 +161,10 @@ def monitor_dualsense(
                 start_idle_inhibitor()
 
             # ------------------------------------------------
-            # Endpoint filter
-            #
-            # usbmon epnum contains the endpoint number and
-            # direction. For OUT endpoint 3 this should be 3.
+            # Endpoint / transfer-type filter
             # ------------------------------------------------
 
-            endpoint = UsbmonEndpoint.from_packet(packet)
-
-            if endpoint.number != DUALSENSE_HID_OUT_ENDPOINT:
-                continue
-
-            if endpoint.is_in:
-                continue
-
-            # ------------------------------------------------
-            # We want interrupt transfers.
-            #
-            # usbmon xfer_type:
-            #
-            # 0 = ISO
-            # 1 = Interrupt
-            # 2 = Control
-            # 3 = Bulk
-            # ------------------------------------------------
-
-            if packet.transfer_type != UsbTransferType.INTERRUPT:
+            if not is_lightbar_packet(packet, bus, device):
                 continue
 
             if not data:

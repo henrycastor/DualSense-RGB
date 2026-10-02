@@ -7,11 +7,35 @@ from unittest.mock import MagicMock, patch
 
 from dualsense_rgb.constants import DUALSENSE_IDS
 from dualsense_rgb.device.dualsense import (
+    is_dualsense_uevent,
     read_uevent,
     parse_bus_device,
     find_dualsense_hidraw,
     extract_dualsense_rgb,
 )
+
+
+class TestIsDualsenseUevent:
+    """The shared predicate behind both hidraw and input-node discovery."""
+
+    def test_matches_lowercase_product_id(self) -> None:
+        assert is_dualsense_uevent("PRODUCT=054c/0ce6/0123\n") is True
+
+    def test_matches_uppercase_hid_id(self) -> None:
+        assert is_dualsense_uevent("HID_ID=0003:054C:0CE6\n") is True
+
+    def test_matches_dualsense_edge(self) -> None:
+        assert is_dualsense_uevent("PRODUCT=054c/0df2/0123\n") is True
+
+    def test_rejects_other_sony_product(self) -> None:
+        # Sony VID present, but a DualSense PID is not.
+        assert is_dualsense_uevent("PRODUCT=054c/0ce0/0123\n") is False
+
+    def test_rejects_other_vendor(self) -> None:
+        assert is_dualsense_uevent("PRODUCT=abc/def/123\n") is False
+
+    def test_rejects_empty_content(self) -> None:
+        assert is_dualsense_uevent("") is False
 
 
 class TestReadUevent:

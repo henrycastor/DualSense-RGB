@@ -18,6 +18,7 @@ from dualsense_rgb.constants import (
 logger = logging.getLogger(__name__)
 
 __all__ = [
+    "is_dualsense_uevent",
     "find_dualsense_hidraw",
     "get_usb_topology",
     "get_usb_topology_udevadm",
@@ -39,6 +40,29 @@ def read_uevent(path: "Path") -> Optional[str]:
             return file.read()
     except OSError:
         return None
+
+
+def is_dualsense_uevent(content: str) -> bool:
+    """Return True if sysfs uevent content identifies a DualSense.
+
+    The same sysfs hierarchy backs both the hidraw node and the input
+    event nodes, so every device match funnels through this single
+    predicate: match the Sony vendor id, then accept either the
+    DualSense or the DualSense Edge product id.
+
+    Matching is case-insensitive because sysfs reports ids inconsistently
+    across kernels (e.g. ``PRODUCT=054c/0ce6/...`` vs. upper-case ids in
+    ``HID_ID=0003:054C:0CE6``).
+    """
+    content_upper = content.upper()
+
+    if DUALSENSE_IDS.SONY_VID not in content_upper:
+        return False
+
+    return (
+        DUALSENSE_IDS.DUALSENSE_PID in content_upper
+        or DUALSENSE_IDS.DUALSENSE_EDGE_PID in content_upper
+    )
 
 
 def parse_bus_device(content: str) -> Optional[Tuple[int, int]]:
@@ -63,7 +87,7 @@ def find_dualsense_hidraw() -> Optional[str]:
     if not HIDRAW_DIR.is_dir():
         return None
 
-    for node in HIDRAW_DIR.iterdir():
+    for node in sorted(HIDRAW_DIR.iterdir(), key=lambda p: p.name):
 
         uevent_path = node / "device" / "uevent"
 
@@ -72,15 +96,7 @@ def find_dualsense_hidraw() -> Optional[str]:
         if content is None:
             continue
 
-        content_upper = content.upper()
-
-        if DUALSENSE_IDS.SONY_VID not in content_upper:
-            continue
-
-        if (
-            DUALSENSE_IDS.DUALSENSE_PID in content_upper
-            or DUALSENSE_IDS.DUALSENSE_EDGE_PID in content_upper
-        ):
+        if is_dualsense_uevent(content):
             return str(Path("/dev") / node.name)
 
     return None

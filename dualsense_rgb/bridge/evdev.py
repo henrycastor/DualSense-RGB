@@ -14,21 +14,22 @@ import logging
 import os
 import signal
 import subprocess
+import sys
 import threading
 import time
 from typing import Callable, Optional
 
 from dualsense_rgb.constants import (
-    DUALSENSE_IDS,
     INHIBIT_CMDS,
     INPUT_DEV_DIR,
     INPUT_SYS_DIR,
 )
-from dualsense_rgb.device.dualsense import read_uevent
+from dualsense_rgb.device.dualsense import is_dualsense_uevent, read_uevent
 
 logger = logging.getLogger(__name__)
 
 __all__ = [
+    "EventReader",
     "IdleTracker",
     "find_dualsense_input_device",
     "GamepadIdleInhibitor",
@@ -87,15 +88,23 @@ class IdleTracker:
 # ============================================================
 
 
-def _is_dualsense_event(uevent_content: str) -> bool:
-    """Return True if the given uevent content identifies a DualSense."""
-    content_upper = uevent_content.upper()
-    if DUALSENSE_IDS.SONY_VID not in content_upper:
-        return False
-    return (
-        DUALSENSE_IDS.DUALSENSE_PID in content_upper
-        or DUALSENSE_IDS.DUALSENSE_EDGE_PID in content_upper
-    )
+def _event_node_index(node) -> int:
+    """Return the numeric index of an ``eventN`` sysfs node.
+
+    A sort key is required rather than a plain string sort because
+    ``event10`` sorts *before* ``event2`` lexicographically, which would
+    break the "lowest-numbered node wins" contract below on any system
+    with ten or more input nodes. Nodes whose name is not of the form
+    ``event<N>`` sort last, so a malformed entry can never outrank a real
+    one.
+    """
+    name = node.name
+    suffix = name[len("event"):] if name.startswith("event") else ""
+
+    if not suffix.isdigit():
+        return sys.maxsize
+
+    return int(suffix)
 
 
 def find_dualsense_input_device() -> Optional[str]:
@@ -115,8 +124,9 @@ def find_dualsense_input_device() -> Optional[str]:
     if not INPUT_SYS_DIR.is_dir():
         return None
 
-    matches = []
-    for node in sorted(INPUT_SYS_DIR.iterdir(), key=lambda p: p.name):
+    best_node = None
+
+    for node in INPUT_SYS_DIR.iterdir():
         if not node.name.startswith("event"):
             continue
 
@@ -127,17 +137,20 @@ def find_dualsense_input_device() -> Optional[str]:
         if content is None:
             continue
 
-        if _is_dualsense_event(content):
-            matches.append(str(INPUT_DEV_DIR / node.name))
+        if not is_dualsense_uevent(content):
+            continue
 
-    if not matches:
+        # A single USB controller exposes several event nodes (main
+        # gamepad, motion sensors, touchpad, headset jack) that all share
+        # the same USB device. The lowest-numbered one is conventionally
+        # the main gamepad node.
+        if best_node is None or _event_node_index(node) < _event_node_index(best_node):
+            best_node = node
+
+    if best_node is None:
         return None
 
-    # A single USB controller exposes several event nodes (main gamepad,
-    # motion sensors, touchpad, headset jack) that all share the same
-    # USB device. Return the lowest-numbered one, which is conventionally
-    # the main gamepad node.
-    return matches[0]
+    return str(INPUT_DEV_DIR / best_node.name)
 
 
 def _ev_syn_type(evdev) -> int:
@@ -346,16 +359,39 @@ def _drain_events(device, idle: IdleTracker, stop_event) -> None:
 # ============================================================
 
 
+class EventReader:
+    """Handle for a running DualSense input event reader thread.
+
+    Pairs the worker thread with its stop signal so callers do not have
+    to stash attributes on a ``threading.Thread`` (which does not support
+    arbitrary attributes) or maintain a parallel module-level registry.
+    """
+
+    def __init__(self, thread: threading.Thread, stop_event: threading.Event) -> None:
+        self._thread = thread
+        self._stop_event = stop_event
+
+    @property
+    def is_alive(self) -> bool:
+        """True while the reader thread is still running."""
+        return self._thread.is_alive()
+
+    def stop(self, timeout: float = 2.0) -> None:
+        """Signal the reader to stop and wait for the thread to exit."""
+        self._stop_event.set()
+        self._thread.join(timeout=timeout)
+
+
 def start_event_reader(
     device_path: str,
     idle: IdleTracker,
     on_error: Optional[Callable[[str], None]] = None,
-) -> Optional[threading.Thread]:
+) -> Optional[EventReader]:
     """Open the DualSense input device and drain events in a daemon thread.
 
     The thread feeds real input events into ``idle`` so the idle
-    inhibitor can be toggled. Returns the thread (already started), or
-    None if the device could not be opened.
+    inhibitor can be toggled. Returns an :class:`EventReader` handle
+    (already started), or None if the device could not be opened.
     """
 
     try:
@@ -389,10 +425,9 @@ def start_event_reader(
         name="dualsense-evdev",
         daemon=True,
     )
-    thread._dualsense_stop_event = stop_event  # type: ignore[attr-defined]
     thread.start()
     logger.info("Started evdev event reader for %s.", device_path)
-    return thread
+    return EventReader(thread, stop_event)
 
 
 def _run_event_reader(device, idle: IdleTracker, stop_event) -> None:
@@ -406,11 +441,8 @@ def _run_event_reader(device, idle: IdleTracker, stop_event) -> None:
             pass
 
 
-def stop_event_reader(thread: Optional[threading.Thread]) -> None:
-    """Signal an event-reader thread to stop and wait for it to exit."""
-    if thread is None:
+def stop_event_reader(reader: Optional[EventReader]) -> None:
+    """Signal an event reader to stop and wait for its thread to exit."""
+    if reader is None:
         return
-    stop_event = getattr(thread, "_dualsense_stop_event", None)
-    if stop_event is not None:
-        stop_event.set()
-    thread.join(timeout=2.0)
+    reader.stop()

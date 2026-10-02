@@ -275,8 +275,8 @@ class TestEventReader:
         # Setting sys.modules["evdev"] = None makes `import evdev`
         # raise ImportError, simulating a missing package.
         with patch.dict(sys.modules, {"evdev": None}):
-            thread = start_event_reader("/dev/input/event0", IdleTracker(10.0))
-            assert thread is None
+            reader = start_event_reader("/dev/input/event0", IdleTracker(10.0))
+            assert reader is None
 
     def test_returns_none_when_device_cannot_open(self) -> None:
         fake = types.SimpleNamespace(
@@ -285,8 +285,8 @@ class TestEventReader:
             EV_KEY=1,
         )
         with patch.dict(sys.modules, {"evdev": fake}):
-            thread = start_event_reader("/dev/input/event0", IdleTracker(10.0))
-            assert thread is None
+            reader = start_event_reader("/dev/input/event0", IdleTracker(10.0))
+            assert reader is None
 
     def test_starts_thread_and_stops_cleanly(self) -> None:
         mock_device = MagicMock()
@@ -299,12 +299,32 @@ class TestEventReader:
         )
         with patch.dict(sys.modules, {"evdev": fake}):
             idle = IdleTracker(10.0)
-            thread = start_event_reader("/dev/input/event0", idle)
-            assert thread is not None
-            assert thread.is_alive()
-            stop_event_reader(thread)
-            assert not thread.is_alive()
+            reader = start_event_reader("/dev/input/event0", idle)
+            assert reader is not None
+            assert reader.is_alive
+            stop_event_reader(reader)
+            assert not reader.is_alive
             mock_device.close.assert_called_once()
+
+    def test_stop_is_idempotent(self) -> None:
+        """Calling stop twice must not raise (join on a dead thread)."""
+        mock_device = MagicMock()
+        mock_device.read.return_value = []
+        fake = types.SimpleNamespace(
+            InputDevice=lambda path: mock_device,
+            EV_SYN=3,
+            EV_KEY=1,
+        )
+        with patch.dict(sys.modules, {"evdev": fake}):
+            reader = start_event_reader("/dev/input/event0", IdleTracker(10.0))
+            assert reader is not None
+            stop_event_reader(reader)
+            stop_event_reader(reader)
+            assert not reader.is_alive
+
+    def test_stop_event_reader_handles_none(self) -> None:
+        """stop_event_reader(None) is a no-op (monitor.py may not start one)."""
+        stop_event_reader(None)
 
     def test_mark_activity_on_real_events(self) -> None:
         class FakeEvent:
@@ -325,10 +345,10 @@ class TestEventReader:
         )
         with patch.dict(sys.modules, {"evdev": fake}):
             idle = IdleTracker(10.0)
-            thread = start_event_reader("/dev/input/event0", idle)
+            reader = start_event_reader("/dev/input/event0", idle)
             # Give the thread a moment to process the first read().
             time.sleep(0.2)
-            stop_event_reader(thread)
+            stop_event_reader(reader)
             # mark_activity was called -> is_idle is False (it started False,
             # so this just confirms activity was recorded, not a transition).
             assert idle.is_idle is False
@@ -350,3 +370,57 @@ class TestEventReader:
             result = find_dualsense_input_device()
 
         assert result == str(tmp_path / "event17")
+
+    def test_single_digit_node_beats_double_digit(self, tmp_path) -> None:
+        """Regression: event nodes must be ordered numerically, not as text.
+
+        A lexicographic sort puts "event10" before "event2", which broke
+        the documented "lowest-numbered node wins" contract on any
+        system with ten or more input nodes.
+        """
+        for name in ("event2", "event10"):
+            device_dir = tmp_path / name / "device"
+            device_dir.mkdir(parents=True)
+            (device_dir / "uevent").write_text(
+                "PRODUCT=054c/0ce6/0123\n", encoding="utf-8"
+            )
+
+        with patch("dualsense_rgb.bridge.evdev.INPUT_SYS_DIR", tmp_path), patch(
+            "dualsense_rgb.bridge.evdev.INPUT_DEV_DIR", tmp_path
+        ):
+            result = find_dualsense_input_device()
+
+        assert result == str(tmp_path / "event2")
+
+    def test_ignores_lowest_numbered_foreign_node(self, tmp_path) -> None:
+        """A non-DualSense node with a lower number must not win."""
+        for name, product in (
+            ("event3", "PRODUCT=abc/def/123\n"),
+            ("event21", "PRODUCT=054c/0ce6/0123\n"),
+        ):
+            device_dir = tmp_path / name / "device"
+            device_dir.mkdir(parents=True)
+            (device_dir / "uevent").write_text(product, encoding="utf-8")
+
+        with patch("dualsense_rgb.bridge.evdev.INPUT_SYS_DIR", tmp_path), patch(
+            "dualsense_rgb.bridge.evdev.INPUT_DEV_DIR", tmp_path
+        ):
+            result = find_dualsense_input_device()
+
+        assert result == str(tmp_path / "event21")
+
+    def test_malformed_event_name_never_wins(self, tmp_path) -> None:
+        """A node named like 'eventX' must sort after real numeric nodes."""
+        for name in ("eventX", "event5"):
+            device_dir = tmp_path / name / "device"
+            device_dir.mkdir(parents=True)
+            (device_dir / "uevent").write_text(
+                "PRODUCT=054c/0ce6/0123\n", encoding="utf-8"
+            )
+
+        with patch("dualsense_rgb.bridge.evdev.INPUT_SYS_DIR", tmp_path), patch(
+            "dualsense_rgb.bridge.evdev.INPUT_DEV_DIR", tmp_path
+        ):
+            result = find_dualsense_input_device()
+
+        assert result == str(tmp_path / "event5")
