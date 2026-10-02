@@ -48,12 +48,47 @@ IDLE_TIMEOUT = 30.0
 POLL_INTERVAL = 0.05
 
 # ============================================================
-# wljoywake
+# libevdev (pyevdev) idle inhibition
 # ============================================================
 
-# Command used to start wljoywake, which prevents the Wayland compositor
-# from idling while a joystick is active.
-WLJOYWAKE_CMD = ["wljoywake"]
+# Directory containing /dev/input/eventN nodes. The DualSense's
+# corresponding event node is discovered from the hidraw sysfs
+# hierarchy, so we do not hard-code a device number here.
+INPUT_DEV_DIR = Path("/dev/input")
+
+# /sys/class/input/eventN is where the per-input-node sysfs tree lives.
+# NOTE: /dev/input/eventN is a character device node, not a directory,
+# so the "device" symlink must be read under /sys/class/input, not
+# under /dev/input.
+INPUT_SYS_DIR = Path("/sys/class/input")
+
+# Idle-inhibitor commands, tried in order until one actually stays
+# alive. Each runs a blocking command (sleep infinity) for the
+# lifetime of the inhibitor.
+INHIBIT_BLOCKING_CMD = ["sleep", "infinity"]
+INHIBIT_REASON = "DualSense RGB idle inhibitor"
+
+# On GNOME/Wayland the compositor's idle (screen lock) handling is
+# driven by org.gnome.SessionManager, so systemd-inhibit --what=idle
+# is NOT honored by the lock. gnome-session-inhibit --inhibit idle is
+# the tool that actually prevents the screen from locking on GNOME.
+GNOME_SESSION_INHIBIT_CMD = [
+    "gnome-session-inhibit",
+    "--inhibit",
+    "idle",
+    "--reason=" + INHIBIT_REASON,
+] + INHIBIT_BLOCKING_CMD
+
+# Portable fallback for non-GNOME / systemd-based sessions.
+SYSTEMD_INHIBIT_CMD = [
+    "systemd-inhibit",
+    "--what=idle:sleep",
+    "--mode=block",
+    "--who=DualSense RGB",
+    "--why=" + INHIBIT_REASON,
+] + INHIBIT_BLOCKING_CMD
+
+INHIBIT_CMDS = [GNOME_SESSION_INHIBIT_CMD, SYSTEMD_INHIBIT_CMD]
 
 
 @dataclass(frozen=True)

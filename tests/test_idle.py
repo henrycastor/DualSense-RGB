@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 
-"""Tests for dualsense_rgb.monitor module (idle detection)."""
+"""Tests for dualsense_rgb.bridge.evdev.IdleTracker."""
 
-from dualsense_rgb.monitor import IdleTracker
+from dualsense_rgb.bridge.evdev import IdleTracker
 
 
 class TestIdleTracker:

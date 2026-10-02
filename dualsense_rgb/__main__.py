@@ -17,37 +17,42 @@ if _project_root not in sys.path:
 def _ensure_dependencies() -> None:
     """Install missing runtime dependencies before importing the package.
 
-    The only third-party dependency is ``openrgb-python`` (imported as
-    ``openrgb``).  If it is not available, attempt to install it via pip
-    so the user can run ``python -m dualsense_rgb`` without manually
-    setting up a virtual environment first.
+    The third-party dependencies are ``openrgb-python`` (imported as
+    ``openrgb``) and ``pyevdev`` (imported as ``evdev``).  If either is
+    not available, attempt to install it via pip so the user can run
+    ``python -m dualsense_rgb`` without manually setting up a virtual
+    environment first.
     """
-    try:
-        import openrgb  # noqa: F401
-    except ImportError:
-        print(
-            "openrgb-python is not installed. "
-            "Attempting automatic installation...",
-            file=sys.stderr,
-        )
-        install_cmd = [
-            sys.executable, "-m", "pip", "install", "openrgb-python>=0.3.6"
-        ]
+    for package, import_name in (
+        ("openrgb-python>=0.3.6", "openrgb"),
+        ("pyevdev>=2.0.0", "evdev"),
+    ):
         try:
-            subprocess.check_call(install_cmd)
-        except subprocess.CalledProcessError:
-            # PEP 668: externally-managed environments (e.g. Debian/Ubuntu
-            # system Python) reject system-wide pip installs.  Retry with
-            # --break-system-packages so the user doesn't have to set up a
-            # virtual environment manually.
+            __import__(import_name)  # noqa: F401
+        except ImportError:
             print(
-                "Standard pip install failed (externally-managed "
-                "environment). Retrying with --break-system-packages...",
+                f"{import_name} is not installed. "
+                "Attempting automatic installation...",
                 file=sys.stderr,
             )
-            subprocess.check_call(
-                install_cmd + ["--break-system-packages"]
-            )
+            install_cmd = [
+                sys.executable, "-m", "pip", "install", package
+            ]
+            try:
+                subprocess.check_call(install_cmd)
+            except subprocess.CalledProcessError:
+                # PEP 668: externally-managed environments (e.g. Debian/Ubuntu
+                # system Python) reject system-wide pip installs.  Retry with
+                # --break-system-packages so the user doesn't have to set up a
+                # virtual environment manually.
+                print(
+                    "Standard pip install failed (externally-managed "
+                    "environment). Retrying with --break-system-packages...",
+                    file=sys.stderr,
+                )
+                subprocess.check_call(
+                    install_cmd + ["--break-system-packages"]
+                )
 
 
 _ensure_dependencies()

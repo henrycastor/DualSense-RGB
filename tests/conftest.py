@@ -3,7 +3,6 @@
 """Shared pytest fixtures for dualsense_rgb tests."""
 
 import logging
-from unittest.mock import MagicMock
 
 import pytest
 

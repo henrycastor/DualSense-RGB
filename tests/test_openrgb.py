@@ -4,14 +4,8 @@
 
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 from dualsense_rgb.bridge.openrgb import (
     _find_openrgb_executable,
-    _kill_openrgb_processes,
-    _try_start_openrgb,
-    _start_openrgb_server,
-    connect_openrgb,
     update_openrgb,
 )
 

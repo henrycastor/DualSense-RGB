@@ -2,19 +2,14 @@
 
 """Tests for dualsense_rgb.device.dualsense module."""
 
-import os
 from pathlib import Path
 from unittest.mock import MagicMock, patch
-
-import pytest
 
 from dualsense_rgb.constants import DUALSENSE_IDS
 from dualsense_rgb.device.dualsense import (
     read_uevent,
     parse_bus_device,
     find_dualsense_hidraw,
-    get_usb_topology,
-    get_usb_topology_udevadm,
     extract_dualsense_rgb,
 )
 

@@ -2,10 +2,7 @@
 
 """Tests for dualsense_rgb.cli module."""
 
-import sys
 from unittest.mock import patch
-
-import pytest
 
 from dualsense_rgb.cli import build_parser, main_cli
 

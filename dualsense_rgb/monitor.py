@@ -11,12 +11,10 @@ from typing import Optional, Tuple
 from dualsense_rgb.constants import (
     DUALSENSE_HID_OUT_ENDPOINT,
     UsbTransferType,
-    ENDPOINT_NUMBER_MASK,
-    ENDPOINT_DIRECTION_MASK,
     IDLE_TIMEOUT,
     POLL_INTERVAL,
 )
-from dualsense_rgb.device.usbmon import open_usbmon, get_usbmon_packet, UsbmonPacket, UsbmonEndpoint
+from dualsense_rgb.device.usbmon import open_usbmon, get_usbmon_packet, UsbmonEndpoint
 from dualsense_rgb.device.dualsense import (
     find_dualsense_hidraw,
     get_usb_topology,
@@ -24,53 +22,18 @@ from dualsense_rgb.device.dualsense import (
     extract_dualsense_rgb,
 )
 from dualsense_rgb.bridge.openrgb import connect_openrgb, update_openrgb
-from dualsense_rgb.bridge.wljoywake import start_wljoywake, stop_wljoywake
+from dualsense_rgb.bridge.evdev import (
+    IdleTracker,
+    find_dualsense_input_device,
+    start_event_reader,
+    start_idle_inhibitor,
+    stop_event_reader,
+    stop_idle_inhibitor,
+)
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["monitor_dualsense", "main", "IdleTracker"]
-
-
-# ============================================================
-# Idle tracking
-# ============================================================
-
-
-class IdleTracker:
-    """Track whether the DualSense is idle or active based on activity.
-
-    The controller is considered idle once no traffic has been seen for
-    ``idle_timeout`` seconds. While active the "screen" is considered on;
-    once idle it is considered off.
-    """
-
-    def __init__(self, idle_timeout: float, clock=time.monotonic) -> None:
-        self.idle_timeout = idle_timeout
-        self._clock = clock
-        self.last_activity = clock()
-        self.is_idle = False
-
-    def mark_activity(self) -> bool:
-        """Record activity from the DualSense.
-
-        Returns True if the controller was idle and is now active again.
-        """
-        was_idle = self.is_idle
-        self.last_activity = self._clock()
-        self.is_idle = False
-        return was_idle
-
-    def update(self) -> bool:
-        """Check for a transition into the idle state.
-
-        Returns True if the controller just became idle.
-        """
-        if self.is_idle:
-            return False
-        if (self._clock() - self.last_activity) >= self.idle_timeout:
-            self.is_idle = True
-            return True
-        return False
+__all__ = ["monitor_dualsense", "main"]
 
 
 # ============================================================
@@ -84,8 +47,15 @@ def monitor_dualsense(
     device: int,
     openrgb_client,
     idle_timeout: float = IDLE_TIMEOUT,
+    input_device: Optional[str] = None,
 ) -> None:
-    """Capture usbmon events and forward DualSense lightbar color to OpenRGB."""
+    """Capture usbmon events and forward DualSense lightbar color to OpenRGB.
+
+    Idle inhibition is driven by real DualSense input events (via
+    libevdev) when ``input_device`` is provided. The inhibitor is
+    started immediately (the controller is assumed to be in use) and
+    stopped when no activity has been seen for ``idle_timeout`` seconds.
+    """
 
     logger.info("Bus:       %03d", bus)
     logger.info("Device:    %03d", device)
@@ -95,6 +65,8 @@ def monitor_dualsense(
     logger.info(
         "Idle detection: screen off after %.1fs of inactivity.", idle_timeout
     )
+    if input_device is not None:
+        logger.info("Input device: %s", input_device)
 
     # Put the usbmon fd in non-blocking mode so the monitor loop can
     # detect idle periods (no traffic) instead of blocking forever on
@@ -106,6 +78,17 @@ def monitor_dualsense(
         logger.warning("Could not set usbmon fd non-blocking: %s", exc)
 
     idle = IdleTracker(idle_timeout)
+
+    # Start the libevdev event reader (if available) so real input
+    # events drive the idle tracker. This is best-effort: if pyevdev
+    # is missing or the device cannot be opened we fall back to the
+    # usbmon-traffic-based idle detection below.
+    event_thread = None
+    if input_device is not None:
+        event_thread = start_event_reader(input_device, idle)
+
+    # The controller is in use at startup, so keep the session awake.
+    start_idle_inhibitor()
 
     last_rgb: Optional[Tuple[int, int, int]] = None
 
@@ -122,7 +105,7 @@ def monitor_dualsense(
                 # gone idle (screen off) and avoid busy-spinning.
                 if idle.update():
                     logger.info("DualSense is now IDLE (screen off).")
-                    stop_wljoywake()
+                    stop_idle_inhibitor()
                 time.sleep(POLL_INTERVAL)
                 continue
 
@@ -140,7 +123,7 @@ def monitor_dualsense(
             # screen stays on while the controller is in use.
             if idle.mark_activity():
                 logger.info("DualSense is now ACTIVE (screen on).")
-                start_wljoywake()
+                start_idle_inhibitor()
 
             # ------------------------------------------------
             # Endpoint filter
@@ -217,6 +200,10 @@ def monitor_dualsense(
         logger.error("Unexpected error in monitor loop: %s", exc, exc_info=True)
 
     finally:
+        # Stop the libevdev event reader and the idle inhibitor.
+        stop_event_reader(event_thread)
+        stop_idle_inhibitor()
+
         try:
             os.close(fd)
         except OSError:
@@ -274,6 +261,18 @@ def main(idle_timeout: float = IDLE_TIMEOUT) -> None:
     logger.info("USB topology: Bus %03d, Device %03d", bus, device)
 
     # --------------------------------------------------------
+    # Find the DualSense input event node (libevdev idle detection)
+    # --------------------------------------------------------
+
+    input_device = find_dualsense_input_device()
+
+    if input_device is None:
+        logger.warning(
+            "DualSense input event node not found. Idle inhibition will "
+            "fall back to usbmon traffic detection only."
+        )
+
+    # --------------------------------------------------------
     # Open usbmon binary interface
     # --------------------------------------------------------
 
@@ -302,7 +301,14 @@ def main(idle_timeout: float = IDLE_TIMEOUT) -> None:
     # --------------------------------------------------------
 
     try:
-        monitor_dualsense(usbmon_fd, bus, device, openrgb_client, idle_timeout)
+        monitor_dualsense(
+            usbmon_fd,
+            bus,
+            device,
+            openrgb_client,
+            idle_timeout,
+            input_device=input_device,
+        )
     finally:
         # Ensure the OpenRGB client is cleaned up.
         try:

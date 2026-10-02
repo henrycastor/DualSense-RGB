@@ -3,24 +3,16 @@
 """Tests for dualsense_rgb.device.usbmon module."""
 
 import struct
-from unittest.mock import MagicMock, patch
-
-import pytest
 
 from dualsense_rgb.constants import (
     USBMON_HEADER_FORMAT,
-    USBMON_HEADER_SIZE,
-    DATA_BUFFER_SIZE,
     UsbTransferType,
-    ENDPOINT_NUMBER_MASK,
-    ENDPOINT_DIRECTION_MASK,
 )
 from dualsense_rgb.device.usbmon import (
     parse_usbmon_header,
     UsbmonPacket,
     UsbmonEndpoint,
     _ioc,
-    MON_IOCX_GETX,
 )
 
 

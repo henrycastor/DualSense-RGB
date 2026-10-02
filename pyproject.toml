@@ -5,14 +5,12 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "dualsense-rgb"
 version = "2.0.0"
-description = "Bridge DualSense lightbar colors to OpenRGB via usbmon"
+description = "Bridge DualSense lightbar colors to OpenRGB via usbmon, with libevdev idle inhibition"
 readme = "README.md"
 license = {text = "MIT"}
 requires-python = ">=3.9"
-authors = [
-    {name = "Henry", email = "henry@example.com"},
-]
-keywords = ["dualsense", "openrgb", "usbmon", "rgb", "lightbar"]
+authors = []
+keywords = ["dualsense", "openrgb", "usbmon", "rgb", "lightbar", "libevdev", "evdev"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: End Users/Desktop",
@@ -28,6 +26,12 @@ classifiers = [
 ]
 dependencies = [
     "openrgb-python>=0.3.6",
+    "pyevdev>=2.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
 ]
 
 [project.scripts]
