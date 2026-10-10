@@ -26,10 +26,12 @@ from dualsense_rgb.bridge.evdev import (
 
 @pytest.fixture(autouse=True)
 def reset_inhibitor_state() -> None:
-    """Reset the module-level inhibitor between tests."""
+    """Reset the module-level inhibitor and session-env cache between tests."""
     evdev._inhibitor = GamepadIdleInhibitor()
+    evdev._session_env_cache = None
     yield
     evdev._inhibitor = GamepadIdleInhibitor()
+    evdev._session_env_cache = None
 
 
 # ============================================================
@@ -424,3 +426,149 @@ class TestEventReader:
             result = find_dualsense_input_device()
 
         assert result == str(tmp_path / "event5")
+
+# ============================================================
+# Session env recovery
+# ============================================================
+
+
+def _write_proc_env(tmp_path, pid, payload):
+    """Create /proc/<pid>/environ under tmp_path with the given bytes."""
+    proc_dir = tmp_path / str(pid)
+    proc_dir.mkdir(parents=True, exist_ok=True)
+    (proc_dir / "environ").write_bytes(payload)
+
+
+class TestReadProcEnv:
+    def test_reads_nul_separated_entries(self, tmp_path) -> None:
+        _write_proc_env(tmp_path, 123, b"FOO=bar\x00BAZ=qux\x00")
+        with patch("dualsense_rgb.bridge.evdev.PROC_ENV", tmp_path):
+            env = evdev._read_proc_env(123)
+        assert env == {"FOO": "bar", "BAZ": "qux"}
+
+    def test_skips_blocklisted_keys(self, tmp_path) -> None:
+        _write_proc_env(
+            tmp_path, 123, b"SSH_AUTH_SOCK=/tmp/agent\x00HOME=/home/henry\x00"
+        )
+        with patch("dualsense_rgb.bridge.evdev.PROC_ENV", tmp_path):
+            env = evdev._read_proc_env(123)
+        assert "SSH_AUTH_SOCK" not in env
+        assert env["HOME"] == "/home/henry"
+
+    def test_missing_environ_returns_empty(self, tmp_path) -> None:
+        with patch("dualsense_rgb.bridge.evdev.PROC_ENV", tmp_path):
+            assert evdev._read_proc_env(999) == {}
+
+
+class TestRecoverSessionEnv:
+    def test_picks_first_session_with_bus_and_runtime(self, tmp_path) -> None:
+        # PID 10: has a session bus but no XDG_RUNTIME_DIR -> skipped.
+        _write_proc_env(
+            tmp_path,
+            10,
+            b"DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus\x00",
+        )
+        # PID 11: has both -> wins.
+        _write_proc_env(
+            tmp_path,
+            11,
+            b"DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus,guid=abc\x00"
+            b"XDG_RUNTIME_DIR=/run/user/1000\x00DISPLAY=:0\x00"
+            b"WAYLAND_DISPLAY=wayland-0\x00HOME=/home/henry\x00USER=henry\x00",
+        )
+        with patch("dualsense_rgb.bridge.evdev.PROC_ENV", tmp_path):
+            recovered = evdev._recover_session_env()
+        assert recovered is not None
+        assert recovered["DBUS_SESSION_BUS_ADDRESS"].startswith(
+            "unix:path=/run/user/1000/bus"
+        )
+        assert recovered["XDG_RUNTIME_DIR"] == "/run/user/1000"
+        assert recovered["DISPLAY"] == ":0"
+
+    def test_returns_none_when_no_session_bus(self, tmp_path) -> None:
+        _write_proc_env(tmp_path, 10, b"HOME=/home/henry\x00")
+        with patch("dualsense_rgb.bridge.evdev.PROC_ENV", tmp_path):
+            assert evdev._recover_session_env() is None
+
+    def test_returns_none_when_runtime_dir_missing(self, tmp_path) -> None:
+        _write_proc_env(
+            tmp_path,
+            10,
+            b"DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus\x00",
+        )
+        with patch("dualsense_rgb.bridge.evdev.PROC_ENV", tmp_path):
+            assert evdev._recover_session_env() is None
+
+    def test_ignores_non_numeric_proc_dirs(self, tmp_path) -> None:
+        _write_proc_env(
+            tmp_path,
+            "self",
+            b"DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus,guid=abc\x00"
+            b"XDG_RUNTIME_DIR=/run/user/1000\x00",
+        )
+        with patch("dualsense_rgb.bridge.evdev.PROC_ENV", tmp_path):
+            assert evdev._recover_session_env() is None
+
+
+class TestSessionEnvCache:
+    def test_caches_recovered_env(self, tmp_path) -> None:
+        _write_proc_env(
+            tmp_path,
+            11,
+            b"DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus,guid=abc\x00"
+            b"XDG_RUNTIME_DIR=/run/user/1000\x00DISPLAY=:0\x00"
+            b"HOME=/home/henry\x00USER=henry\x00",
+        )
+        with patch("dualsense_rgb.bridge.evdev.PROC_ENV", tmp_path):
+            first = evdev._session_env()
+            second = evdev._session_env()
+        assert first is second  # cached, same object
+        assert first["DISPLAY"] == ":0"
+
+    def test_merges_on_top_of_os_environ(self, tmp_path) -> None:
+        _write_proc_env(
+            tmp_path,
+            11,
+            b"DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus,guid=abc\x00"
+            b"XDG_RUNTIME_DIR=/run/user/1000\x00DISPLAY=:0\x00"
+            b"HOME=/home/henry\x00USER=henry\x00",
+        )
+        with patch("dualsense_rgb.bridge.evdev.PROC_ENV", tmp_path):
+            env = evdev._session_env()
+        # PATH (from os.environ) must survive the merge.
+        assert "PATH" in env
+        assert env["DISPLAY"] == ":0"
+
+    def test_none_when_no_session(self, tmp_path) -> None:
+        with patch("dualsense_rgb.bridge.evdev.PROC_ENV", tmp_path):
+            assert evdev._session_env() is None
+
+
+class TestInhibitorEnv:
+    def test_inhibitor_uses_recovered_env(self, tmp_path) -> None:
+        """Regression: without the session env, gnome-session-inhibit
+        fails to connect to the session bus and the screen lock is never
+        inhibited. The recovered env must be passed through to the
+        subprocess."""
+        _write_proc_env(
+            tmp_path,
+            11,
+            b"DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus,guid=abc\x00"
+            b"XDG_RUNTIME_DIR=/run/user/1000\x00DISPLAY=:0\x00"
+            b"HOME=/home/henry\x00USER=henry\x00",
+        )
+        mock_process = MagicMock()
+        mock_process.wait.side_effect = subprocess.TimeoutExpired(cmd="x", timeout=0.5)
+        mock_process.poll.return_value = None
+        with patch("dualsense_rgb.bridge.evdev.PROC_ENV", tmp_path), patch(
+            "subprocess.Popen", return_value=mock_process
+        ) as mock_popen:
+            start_idle_inhibitor()
+            assert mock_popen.called
+            env_arg = mock_popen.call_args.kwargs.get("env")
+            assert env_arg is not None
+            assert env_arg["DBUS_SESSION_BUS_ADDRESS"].startswith(
+                "unix:path=/run/user/1000/bus"
+            )
+            assert env_arg["DISPLAY"] == ":0"
+            assert "PATH" in env_arg

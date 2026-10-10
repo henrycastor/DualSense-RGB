@@ -62,6 +62,29 @@ INPUT_DEV_DIR = Path("/dev/input")
 # under /dev/input.
 INPUT_SYS_DIR = Path("/sys/class/input")
 
+# Session environment variables that the idle-inhibitor tools need to
+# reach the user's session bus / display. When the bridge is launched
+# via ``sudo`` (the usual case, since it needs /dev/usbmon and hidraw
+# access) it inherits an EMPTY environment, so ``gnome-session-inhibit``
+# — the only command GNOME's screen lock actually honors — fails with
+# "Failed to connect to session bus". These keys are recovered from a
+# running user session process and passed through to the inhibitor.
+SESSION_ENV_KEYS = (
+    "DBUS_SESSION_BUS_ADDRESS",
+    "DISPLAY",
+    "WAYLAND_DISPLAY",
+    "XDG_RUNTIME_DIR",
+    "XDG_SESSION_DESKTOP",
+    "HOME",
+    "USER",
+    "GNOME_DESKTOP_SESSION_ID",
+)
+# /proc/<pid>/environ is the source of truth for a process's env.
+PROC_ENV = Path("/proc")
+ENV_NULL = "\0"
+# Keys that must never be inherited from a foreign session (security).
+ENV_BLOCKLIST = ("SSH_AUTH_SOCK", "SSH_AGENT_PID")
+
 # Idle-inhibitor commands, tried in order until one actually stays
 # alive. Each runs a blocking command (sleep infinity) for the
 # lifetime of the inhibitor.

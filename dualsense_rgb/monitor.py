@@ -158,7 +158,13 @@ def monitor_dualsense(
             # screen stays on while the controller is in use.
             if idle.mark_activity():
                 logger.info("DualSense is now ACTIVE (screen on).")
-                start_idle_inhibitor()
+            # start() is idempotent: restart the inhibitor on every observed
+            # activity, not just on the idle->active transition. This covers
+            # the case where the event-reader thread already cleared the idle
+            # flag (so mark_activity() above returns False), the case where
+            # the inhibitor process died while the controller was already
+            # active, and the normal transition case.
+            start_idle_inhibitor()
 
             # ------------------------------------------------
             # Endpoint / transfer-type filter

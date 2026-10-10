@@ -20,9 +20,13 @@ import time
 from typing import Callable, Optional
 
 from dualsense_rgb.constants import (
+    ENV_BLOCKLIST,
+    ENV_NULL,
     INHIBIT_CMDS,
     INPUT_DEV_DIR,
     INPUT_SYS_DIR,
+    PROC_ENV,
+    SESSION_ENV_KEYS,
 )
 from dualsense_rgb.device.dualsense import is_dualsense_uevent, read_uevent
 
@@ -177,6 +181,111 @@ def _ev_syn_type(evdev) -> int:
 # ============================================================
 
 
+def _read_proc_env(pid: int) -> dict:
+    """Read a process's environment from ``/proc/<pid>/environ``.
+
+    ``/proc/<pid>/environ`` separates entries with NUL bytes. Returns an
+    empty dict if the file cannot be read (e.g. the process is gone or
+    the caller lacks permission), so callers can safely merge the
+    result.
+    """
+    environ_path = PROC_ENV / str(pid) / "environ"
+    try:
+        with open(environ_path, "rb") as handle:
+            raw = handle.read()
+    except OSError:
+        return {}
+
+    if not raw:
+        return {}
+
+    env = {}
+    for entry in raw.split(ENV_NULL.encode("utf-8")):
+        if not entry:
+            continue
+        try:
+            key, _, value = entry.decode("utf-8", "replace").partition("=")
+        except Exception:
+            continue
+        if key and key not in ENV_BLOCKLIST:
+            env[key] = value
+    return env
+
+
+def _recover_session_env() -> Optional[dict]:
+    """Recover the user session environment for idle-inhibitor subprocesses.
+
+    The bridge is normally launched via ``sudo`` (it needs /dev/usbmon
+    and hidraw access), and ``sudo`` strips the invoking user's
+    environment. That leaves the inhibitor subprocesses with an empty
+    env, so ``gnome-session-inhibit`` — the only command GNOME's screen
+    lock actually honors — fails with "Failed to connect to session bus".
+
+    We recover the needed keys from a running user session process by
+    scanning ``/proc`` for processes that have a session bus address.
+    The first one with a usable ``DBUS_SESSION_BUS_ADDRESS`` wins.
+
+    The result is MERGED on top of ``os.environ`` (not a replacement),
+    so the subprocess still has PATH and everything else it needs to
+    resolve ``sleep`` and the other binaries. Returns None when no
+    session env can be recovered (e.g. running as the user directly,
+    or no graphical session), in which case the inhibitor uses the
+    caller's own environment unchanged.
+    """
+    keys = set(SESSION_ENV_KEYS)
+
+    for pid_dir in sorted(PROC_ENV.iterdir()):
+        if not pid_dir.name.isdigit():
+            continue
+
+        env = _read_proc_env(int(pid_dir.name))
+        if "DBUS_SESSION_BUS_ADDRESS" not in env:
+            continue
+
+        recovered = {key: env[key] for key in keys if key in env}
+        # A session bus address alone is enough to connect; XDG_RUNTIME_DIR
+        # is needed too for the autolaunch fallback, so require both.
+        if "XDG_RUNTIME_DIR" in recovered:
+            logger.debug(
+                "Recovered session env from PID %s (%s)",
+                pid_dir.name,
+                recovered.get("DBUS_SESSION_BUS_ADDRESS"),
+            )
+            return recovered
+
+    return None
+
+
+# Cache of the recovered session env. Recovering it scans /proc, which
+# is wasteful to repeat on every activity packet, and the session env
+# does not change for the lifetime of the session.
+_session_env_cache: Optional[Optional[dict]] = None
+
+
+def _session_env() -> Optional[dict]:
+    """Return the session env to pass to inhibitor subprocesses.
+
+    Lazily recovers (and caches) the user session env, merging it on top
+    of ``os.environ`` so PATH and other essentials are preserved. When
+    the bridge is running as the user directly (no sudo), the cache is
+    still valid — the recovered session env is a superset of what the
+    process already has.
+    """
+    global _session_env_cache
+    if _session_env_cache is not None:
+        return _session_env_cache
+
+    recovered = _recover_session_env()
+    if recovered is None:
+        _session_env_cache = None
+        return None
+
+    merged = dict(os.environ)
+    merged.update(recovered)
+    _session_env_cache = merged
+    return merged
+
+
 class GamepadIdleInhibitor:
     """Manage an idle-inhibitor subprocess that blocks session idle.
 
@@ -192,7 +301,7 @@ class GamepadIdleInhibitor:
     # did not immediately exit (e.g. due to an unknown option).
     _START_GRACE = 0.5
 
-    def __init__(self, cmds=None) -> None:
+    def __init__(self, cmds=None, env=None) -> None:
         if cmds is None:
             cmds = list(INHIBIT_CMDS)
         elif isinstance(cmds, str):
@@ -200,6 +309,13 @@ class GamepadIdleInhibitor:
         else:
             cmds = [list(c) for c in cmds]
         self._cmds = cmds
+        # Environment to pass to inhibitor subprocesses. When the bridge
+        # is launched via ``sudo`` (the usual case) it inherits an empty
+        # environment, so ``gnome-session-inhibit`` — the only command
+        # GNOME's screen lock actually honors — fails to reach the
+        # session bus. Recovering the user session env and passing it
+        # through is what makes the GNOME path work.
+        self._env = env
         self._process: Optional[subprocess.Popen] = None
         self._active_cmd = None
         self._lock = threading.Lock()
@@ -212,6 +328,16 @@ class GamepadIdleInhibitor:
     def active_command(self) -> Optional[list]:
         """The inhibitor command that is currently running, if any."""
         return self._active_cmd
+
+    @property
+    def env(self) -> Optional[dict]:
+        """Environment passed to inhibitor subprocesses (may be None)."""
+        return self._env
+
+    @env.setter
+    def env(self, value: Optional[dict]) -> None:
+        """Set the environment passed to inhibitor subprocesses."""
+        self._env = value
 
     def start(self) -> None:
         """Start the inhibitor if it is not already running."""
@@ -241,6 +367,7 @@ class GamepadIdleInhibitor:
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 start_new_session=True,
+                env=self._env,
             )
         except FileNotFoundError:
             logger.debug("Idle inhibitor %s not found.", cmd[0])
@@ -294,10 +421,19 @@ def start_idle_inhibitor(cmd=None) -> None:
     """Start the idle inhibitor. See ``GamepadIdleInhibitor.start``.
 
     ``cmd`` may be a single command list or a list of command lists.
+
+    The user session environment is recovered from a running session
+    process and passed through to the inhibitor subprocesses. This is
+    what lets ``gnome-session-inhibit`` reach the session bus when the
+    bridge is launched via ``sudo`` (which strips the invoking user's
+    environment); without it the GNOME path silently fails and the
+    screen lock is never actually inhibited.
     """
     if cmd is not None:
         global _inhibitor
-        _inhibitor = GamepadIdleInhibitor(cmd)
+        _inhibitor = GamepadIdleInhibitor(cmd, env=_session_env())
+    else:
+        _inhibitor.env = _session_env()
     _inhibitor.start()
 
 
@@ -321,7 +457,16 @@ def _drain_events(device, idle: IdleTracker, stop_event) -> None:
 
     Runs in a daemon thread. ``EV_SYN`` events are noise and do not
     count as activity. Any other event type marks the controller as
-    active.
+    active and restarts the idle inhibitor.
+
+    The inhibitor is restarted on every real event (``start()`` is
+    idempotent), not only on the idle->active transition. This is
+    critical: this thread races with the usbmon loop in
+    ``monitor.py`` to be the first to observe activity. If this thread
+    wins the race it clears the idle flag, so the main loop's later
+    ``mark_activity()`` returns ``False`` and would never restart the
+    inhibitor — leaving the screen off even though the controller is
+    in use.
     """
 
     try:
@@ -343,7 +488,12 @@ def _drain_events(device, idle: IdleTracker, stop_event) -> None:
             for event in events:
                 if event.type == ev_syn:
                     continue
-                idle.mark_activity()
+                if idle.mark_activity():
+                    logger.debug("DualSense active again after idle.")
+                # start() is idempotent: restart whenever we see real
+                # activity so the inhibitor is revived even if this
+                # thread cleared the idle flag before the main loop ran.
+                start_idle_inhibitor()
         except (OSError, BlockingIOError):
             # No events available right now — avoid busy-spinning.
             stop_event.wait(0.05)
